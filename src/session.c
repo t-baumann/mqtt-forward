@@ -1,16 +1,16 @@
 #include "session.h"
 #include "log.h"
 #include "utils.h"
+#include "compat_win32.h"
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifndef _WIN32
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
+#endif
 
 
 struct tcp_session tcp_sessions[MAX_SESSIONS];
@@ -39,7 +39,7 @@ static void store_old_session_id(char *session_id)
 
 static int connect_server_session(const struct tcp_session_config *session_cfg,
 				  struct sockaddr_in *tcp_server_addr,
-				  int *tcp_sock)
+				  socket_t *tcp_sock)
 {
 	int ret;
 	static struct sockaddr_in server_addr;
@@ -48,9 +48,9 @@ static int connect_server_session(const struct tcp_session_config *session_cfg,
 
 	/* Create TCP socket and connect to the server*/
 	*tcp_sock = socket(AF_INET, SOCK_STREAM, 0);
-	if (*tcp_sock < 0) {
+	if (*tcp_sock == INVALID_SOCK) {
 		LOG(LOG_INFO, "%s: Unable to create TCP socket. errno %d\n",
-			__func__, errno);
+			__func__, SOCK_ERRNO());
 		return -1;
 	}
 
@@ -66,9 +66,9 @@ static int connect_server_session(const struct tcp_session_config *session_cfg,
 		      sizeof(server_addr));
 	if (ret) {
 		LOG(LOG_INFO, "%s: Unable to establish TCP connection. errno %d\n",
-			__func__, errno);
-		close(*tcp_sock);
-		*tcp_sock = -1;
+			__func__, SOCK_ERRNO());
+		CLOSE_SOCK(*tcp_sock);
+		*tcp_sock = INVALID_SOCK;
 		return -1;
 	}
 
@@ -105,7 +105,7 @@ void request_session_close(struct tcp_session *session_data)
 	pthread_mutex_lock(&session_mtx);
 	if (session_data->session_id && !session_data->closing) {
 		session_data->closing = true;
-		if (session_data->sock >= 0)
+		if (session_data->sock != INVALID_SOCK)
 			(void)shutdown(session_data->sock, SHUT_RDWR);
 	}
 	pthread_mutex_unlock(&session_mtx);
@@ -126,8 +126,8 @@ void clear_session(struct tcp_session *session_data)
 	 * array
 	 */
 	store_old_session_id(session_data->session_id);
-	if (session_data->sock >= 0)
-		close(session_data->sock);
+	if (session_data->sock != INVALID_SOCK)
+		CLOSE_SOCK(session_data->sock);
 	free(session_data->rx_buf);
 	free(session_data->publish_topic);
 	free(session_data->session_cfg);
@@ -140,7 +140,7 @@ void clear_session(struct tcp_session *session_data)
 int create_session(const char *session_id,
 		   size_t session_id_len,
 		   size_t *session_nbr,
-		   int tcp_sock,
+		   socket_t tcp_sock,
 		   struct sockaddr_in *tcp_server_addr,
 		   bool server_session,
 		   struct tcp_session_config *session_cfg,
@@ -231,8 +231,8 @@ int create_session(const char *session_id,
 		free(tcp_sessions[session_nbr_local].rx_buf);
 		free(tcp_sessions[session_nbr_local].publish_topic);
 		free(session_id_local);
-		if (server_session && tcp_sock >= 0)
-			close(tcp_sock);
+		if (server_session && tcp_sock != INVALID_SOCK)
+			CLOSE_SOCK(tcp_sock);
 		memset(&tcp_sessions[session_nbr_local], 0, sizeof(tcp_sessions[0]));
 		return -1;
 	}
@@ -264,8 +264,8 @@ int create_session(const char *session_id,
 		free(tcp_sessions[session_nbr_local].rx_buf);
 		free(tcp_sessions[session_nbr_local].publish_topic);
 		free(session_id_local);
-		if (server_session && tcp_sock >= 0)
-			close(tcp_sock);
+		if (server_session && tcp_sock != INVALID_SOCK)
+			CLOSE_SOCK(tcp_sock);
 		memset(&tcp_sessions[session_nbr_local], 0, sizeof(tcp_sessions[0]));
 		return -1;
 	}

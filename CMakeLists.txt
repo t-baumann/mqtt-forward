@@ -21,6 +21,10 @@ set(source_files_mqtt_forward
     src/utils.c
 )
 
+if(WIN32)
+  list(APPEND source_files_mqtt_forward src/getopt_compat.c)
+endif()
+
 add_executable(${TARGET_MQTT_FORWARD} ${source_files_mqtt_forward})
 
 target_include_directories(${TARGET_MQTT_FORWARD} PRIVATE
@@ -36,16 +40,29 @@ set(CMAKE_C_FLAGS_DEBUG "-O0 -g3")
 set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 find_package(OpenSSL REQUIRED)
-target_link_libraries(${TARGET_MQTT_FORWARD} PRIVATE
-    pthread
-    mosquitto
-    OpenSSL::SSL
-    OpenSSL::Crypto
-)
+
+if(WIN32)
+  target_link_libraries(${TARGET_MQTT_FORWARD} PRIVATE
+      mosquitto
+      OpenSSL::SSL
+      OpenSSL::Crypto
+      ws2_32
+  )
+else()
+  target_link_libraries(${TARGET_MQTT_FORWARD} PRIVATE
+      pthread
+      mosquitto
+      OpenSSL::SSL
+      OpenSSL::Crypto
+  )
+endif()
 
 install(TARGETS ${TARGET_MQTT_FORWARD} DESTINATION bin)
 
-if(BUILD_TESTING)
+# The unit-test and integration-test harnesses rely on POSIX-only APIs
+# (socketpair(AF_UNIX, ...), etc.) that are out of scope for the native
+# Win32 port, so they are only built on non-Windows platforms.
+if(BUILD_TESTING AND NOT WIN32)
   set(TARGET_UNIT_TESTS mqtt-forward-unit-tests)
   set(TARGET_TEST_HELPER mqtt-forward-test-helper)
 

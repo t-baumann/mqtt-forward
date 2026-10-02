@@ -2,7 +2,10 @@
 #define MQTT_FORWARD_LOG_H
 
 #include <stdbool.h>
+#include "compat_win32.h"
+#ifndef _WIN32
 #include <syslog.h>
+#endif
 
 extern bool server_mode;
 

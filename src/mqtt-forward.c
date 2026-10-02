@@ -6,22 +6,21 @@
 #include <string.h>
 #include <errno.h>
 #include <pthread.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <mosquitto.h>
-#include <getopt.h>
-#include <poll.h>
+#include "compat_win32.h"
+#include "getopt_compat.h"
 #include "log.h"
 #include "utils.h"
 #include "protocol.h"
 #include "session.h"
 #include "beacon.h"
+
+#ifndef _WIN32
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <netdb.h>
+#endif
 
 #define TX_WINDOW_LIMIT 100
 
@@ -37,7 +36,7 @@
 /**
  * Global variables
  */
-static int tcp_client_listen_sock;
+static socket_t tcp_client_listen_sock = INVALID_SOCK;
 static int tcp_client_listen_port;
 static int tcp_server_connect_port;
 static pthread_t tcp_accept_thread;
@@ -70,24 +69,25 @@ static char mqtt_private_key[100];
 static char mqtt_topic_prefix[50];
 static char tcp_server_addr_str[100];
 
-static int send_all(int sock, const uint8_t *buf, size_t len)
+static int send_all(socket_t sock, const uint8_t *buf, size_t len)
 {
 	size_t sent_len = 0;
 
 	while (sent_len < len) {
-		ssize_t ret;
+		int ret;
 
 		ret = send(sock,
-			   buf + sent_len,
-			   len - sent_len,
+			   (const char *)(buf + sent_len),
+			   (int)(len - sent_len),
 			   MSG_NOSIGNAL);
 		if (ret < 0) {
+#ifndef _WIN32
 			if (errno == EINTR)
 				continue;
+#endif
 			return -1;
 		}
 		if (ret == 0) {
-			errno = EPIPE;
 			return -1;
 		}
 
@@ -109,14 +109,14 @@ static void *tcp_session_rx_thread_fn(void *arg)
 	int recv_len;
 	struct tcp_session *session_data;
 	struct tcp_over_mqtt_hdr tx_hdr;
-	int sock;
+	socket_t sock;
 	int backlog_offset;
 	int backlog_write_idx;
 	char *topic;
 	struct tx_packet_backlog *tx_backlog;
 	struct rx_packet_backlog *rx_backlog;
 	struct timespec sleep_time = {.tv_nsec = 100000000};
-	struct pollfd fds = {.events = POLLIN};
+	compat_pollfd_t fds = {.events = POLLIN};
 
 	session_data = (struct tcp_session *)arg;
 
@@ -182,7 +182,7 @@ static void *tcp_session_rx_thread_fn(void *arg)
 			pthread_mutex_unlock(&session_mtx);
 			ret = poll(&fds, 1, 500);
 			if (ret < 0) {
-				LOG(LOG_INFO, "%s: poll errno: %d\n", __func__, errno);
+				LOG(LOG_INFO, "%s: poll errno: %d\n", __func__, SOCK_ERRNO());
 				break;
 			} else if (ret == 0) {
 				/* Timeout */
@@ -230,11 +230,11 @@ static void *tcp_session_rx_thread_fn(void *arg)
 
 			/* Data has been received on socket */
 			recv_len = recv(sock,
-					rx_buf + sizeof(tx_hdr) + cfg_hdr_size,
-					SESSION_RX_BUF_SIZE - sizeof(tx_hdr) - cfg_hdr_size,
+					(char *)(rx_buf + sizeof(tx_hdr) + cfg_hdr_size),
+					(int)(SESSION_RX_BUF_SIZE - sizeof(tx_hdr) - cfg_hdr_size),
 					0);
 			if (recv_len < 0) {
-				LOG(LOG_INFO, "%s: recv errno: %d\n", __func__, errno);
+				LOG(LOG_INFO, "%s: recv errno: %d\n", __func__, SOCK_ERRNO());
 				break;
 			} else if (recv_len == 0) {
 				LOG(LOG_INFO, "%s: TCP connection terminated\n", __func__);
@@ -317,7 +317,7 @@ static void *tcp_accept_thread_fn(void *arg)
 	struct sockaddr_in client_addr;
 	socklen_t addr_len = sizeof(client_addr);
 	int ret;
-	int client_sock;
+	socket_t client_sock;
 	size_t session_nbr;
 	struct tcp_session_config *session_cfg;
 
@@ -327,9 +327,8 @@ static void *tcp_accept_thread_fn(void *arg)
 				     &addr_len);
 		LOG(LOG_INFO, "%s: Accepted TCP connection\n", __func__);
 
-		if (client_sock < 0) {
-			LOG(LOG_INFO, "connect to remote server failed. errno %d\n", errno);
-			close(client_sock);
+		if (client_sock == INVALID_SOCK) {
+			LOG(LOG_INFO, "connect to remote server failed. errno %d\n", SOCK_ERRNO());
 			continue;
 		}
 
@@ -339,7 +338,7 @@ static void *tcp_accept_thread_fn(void *arg)
 			if (!session_cfg) {
 				LOG(LOG_INFO, "%s: Unable to allocate session config\n",
 					__func__);
-				close(client_sock);
+				CLOSE_SOCK(client_sock);
 				continue;
 			}
 			session_cfg->ip_addr =
@@ -365,7 +364,7 @@ static void *tcp_accept_thread_fn(void *arg)
 		if (ret < 0) {
 			LOG(LOG_INFO, "%s: Unable to create client session\n", __func__);
 			free(session_cfg);
-			close(client_sock);
+			CLOSE_SOCK(client_sock);
 			continue;
 		}
 	}
@@ -913,7 +912,7 @@ int mqtt_forward_init(void)
 		tcp_server_addr->sin_port = htons(tcp_server_connect_port);
 	} else if (!list_servers) {
 		tcp_client_listen_sock = socket(AF_INET, SOCK_STREAM, 0);
-		if (tcp_client_listen_sock < 0)
+		if (tcp_client_listen_sock == INVALID_SOCK)
 			goto err;
 
 		tcp_listen_addr.sin_port = htons(tcp_client_listen_port);
@@ -922,13 +921,13 @@ int mqtt_forward_init(void)
 			   sizeof(tcp_listen_addr));
 		if (ret) {
 			LOG(LOG_INFO, "Unable to bind port %d. bind errno: %d\n",
-				tcp_client_listen_port, errno);
+				tcp_client_listen_port, SOCK_ERRNO());
 			goto err;
 		}
 
 		ret = listen(tcp_client_listen_sock, 128);
 		if (ret) {
-			LOG(LOG_INFO, "TCP listen errno: %d\n", errno);
+			LOG(LOG_INFO, "TCP listen errno: %d\n", SOCK_ERRNO());
 			goto err;
 		}
 	}
@@ -1093,6 +1092,15 @@ int main(int argc, char **argv)
 	int ret;
 	int c;
 	int option_index = 0;
+#ifdef _WIN32
+	WSADATA wsa_data;
+
+	ret = WSAStartup(MAKEWORD(2, 2), &wsa_data);
+	if (ret) {
+		LOG(LOG_INFO, "WSAStartup failed: %d\n", ret);
+		return -1;
+	}
+#endif
 	static struct option long_options[] = {
 		{"help", no_argument, 0, 'h'},
 		{"debug", no_argument, 0, 'd'},

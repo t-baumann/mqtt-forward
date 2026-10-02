@@ -122,6 +122,33 @@ Build with cmake::
     sudo make install
     cd -
 
+Build on Windows (native Win32)
+--------------------------------
+
+mqtt-forward can be built as a native Windows executable using the
+MinGW-w64 toolchain (e.g. via the MSYS2 project's ``mingw64`` environment).
+The build uses Winsock2 instead of BSD sockets and a small vendored
+``getopt_long()`` implementation; the test and unit-test binaries are
+POSIX-only and are skipped automatically on Windows.
+
+Install MSYS2 (https://www.msys2.org/) and, from the **MSYS2 MINGW64**
+shell, install the toolchain and dependencies::
+
+    pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake \
+              mingw-w64-x86_64-make mingw-w64-x86_64-mosquitto \
+              mingw-w64-x86_64-openssl
+
+Then build from the **same MINGW64 shell**::
+
+    cmake -S . -B build-win -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+    cmake --build build-win
+
+The resulting ``mqtt-forward.exe`` depends on the MinGW/mosquitto/OpenSSL
+DLLs; either run it from the MSYS2 MINGW64 shell (so they're on ``PATH``),
+or copy the required DLLs (``libmosquitto*.dll``, ``libssl*.dll``,
+``libcrypto*.dll``, ``libwinpthread*.dll``, ``libgcc*.dll``, etc. from
+``C:\msys64\mingw64\bin``) next to the executable.
+
 Usage examples
 --------------
 
